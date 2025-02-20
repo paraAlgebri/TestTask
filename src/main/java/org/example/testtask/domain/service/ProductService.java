@@ -16,7 +16,7 @@ public class ProductService {
     private final RedisProductCache redisProductCache;
 
     /**
-     * Завантажує продукти за списком ID з Redis або з кешу.
+     * Завантажує продукти за списком ID з Redis.
      */
     public Flux<Product> getProductsByIds(Flux<String> productIds) {
         return productIds.flatMap(this::getProductById)
@@ -24,7 +24,7 @@ public class ProductService {
     }
 
     /**
-     * Завантажує один продукт за його ID з Redis або з кешу.
+     * Завантажує один продукт за його ID з Redis.
      */
     public Mono<Product> getProductById(String productId) {
         return Mono.justOrEmpty(redisProductCache.getProduct(productId))
@@ -37,7 +37,7 @@ public class ProductService {
     }
 
     /**
-     * Завантажує продукт з кешу чи падає на дефолтне значення.
+     * Завантажує продукт з кешу.
      */
     private Mono<Product> loadProductFromCacheOrFallback(String productId) {
         Product fallbackProduct = new Product(productId, "Missing Product Name");

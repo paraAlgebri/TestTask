@@ -26,7 +26,6 @@ import java.io.Reader;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -82,20 +81,22 @@ public class TradeControllerTest {
 
     @BeforeEach
     void setUp() {
+        log.info("Starting test setup - resetting all mocks");
         reset(csvParser, tradeService, productService);
+        log.info("Test setup completed");
     }
 
     @Test
     @DisplayName("Should correctly process CSV trade file")
     void processTradeFile() throws IOException {
+        log.info("Starting processTradeFile test");
+
         String tradeCsvContent = new String(
                 new ClassPathResource("trade.csv").getInputStream().readAllBytes(),
                 StandardCharsets.UTF_8
         );
+        log.info("Loaded trade.csv content:\n{}", tradeCsvContent);
 
-        log.info("CSV content:\n{}", tradeCsvContent);
-
-        // Expected Trade objects
         List<Trade> expectedTrades = List.of(
                 new Trade(LocalDate.of(2023, 1, 1), "1", "USD", new BigDecimal("100.25")),
                 new Trade(LocalDate.of(2023, 1, 1), "2", "EUR", new BigDecimal("200.45")),
@@ -120,6 +121,7 @@ public class TradeControllerTest {
                 new Trade(LocalDate.of(2013, 12, 31), "10", "USD", new BigDecimal("1600.60")),
                 new Trade(LocalDate.of(2023, 1, 11), "5", "GBP", new BigDecimal("1800.80"))
         );
+        log.info("Created {} expected trade objects", expectedTrades.size());
 
         Map<String, Product> productMap = expectedTrades.stream()
                 .collect(Collectors.toMap(
@@ -127,23 +129,26 @@ public class TradeControllerTest {
                         trade -> new Product(trade.getProductId(), "Product " + trade.getProductId()),
                         (existing, replacement) -> existing
                 ));
+        log.info("Created product map with {} unique products", productMap.size());
 
-        // Mock csvParser behavior
         when(csvParser.parseTrades(any(Reader.class)))
                 .thenReturn(Flux.fromIterable(expectedTrades));
+        log.info("Configured csvParser mock to return {} trades", expectedTrades.size());
 
-        // Pre-populate the product cache in TradeService
         when(tradeService.enrichTradeWithProduct(any(Trade.class)))
                 .thenAnswer(invocation -> {
                     Trade trade = invocation.getArgument(0);
                     Product product = productMap.get(trade.getProductId());
+                    log.debug("Enriching trade with productId: {} [date: {}, currency: {}]",
+                            trade.getProductId(), trade.getDate(), trade.getCurrency());
                     if (product != null) {
                         return Mono.just(trade.withProductName(product.getProductName()));
                     }
                     return Mono.just(trade.withProductName("Missing Product Name"));
                 });
+        log.info("Configured tradeService mock with product enrichment logic");
 
-        // Execute test
+        log.info("Sending POST request to /api/v1/enrich endpoint");
         List<Trade> actualTrades = webTestClient.post()
                 .uri("/api/v1/enrich")
                 .contentType(MediaType.TEXT_PLAIN)
@@ -154,99 +159,91 @@ public class TradeControllerTest {
                 .returnResult()
                 .getResponseBody();
 
-        assertNotNull(actualTrades, "Response body is null");
+        assertNotNull(actualTrades, "Response body should not be null");
+        log.info("Received {} trades in response", actualTrades.size());
 
-        log.info("Received Trades:");
-        actualTrades.forEach(trade -> log.info("{}", trade));
+        log.info("Verifying received trades:");
+        actualTrades.forEach(trade ->
+                log.info("Trade - Date: {}, ProductId: {}, Currency: {}, Price: {}, ProductName: {}",
+                        trade.getDate(), trade.getProductId(), trade.getCurrency(),
+                        trade.getPrice(), trade.getProductName())
+        );
 
-        assertEquals(expectedTrades.size(), actualTrades.size(), "Number of trades does not match");
+        assertEquals(expectedTrades.size(), actualTrades.size(),
+                String.format("Expected %d trades but got %d", expectedTrades.size(), actualTrades.size()));
+        log.info("Trade count verification passed");
 
+        log.info("Starting StepVerifier verification");
         StepVerifier.create(Flux.fromIterable(actualTrades))
                 .recordWith(ArrayList::new)
                 .thenConsumeWhile(trade -> true)
                 .consumeRecordedWith(trades -> {
                     assertEquals(expectedTrades.size(), trades.size());
-                    trades.forEach(trade ->
-                            assertNotNull(trade.getProductName(), "Product name should not be null")
-                    );
+                    trades.forEach(trade -> {
+                        assertNotNull(trade.getProductName(),
+                                "Product name should not be null for trade: " + trade.getProductId());
+                        log.debug("Verified trade: {}", trade);
+                    });
                 })
                 .verifyComplete();
+        log.info("StepVerifier verification completed successfully");
 
         verify(csvParser).parseTrades(any(Reader.class));
         verify(tradeService, times(expectedTrades.size())).enrichTradeWithProduct(any(Trade.class));
+        log.info("Mock verifications completed successfully");
     }
 
 
     @Test
     @DisplayName("Should process products.csv file")
     void processProductFile() throws IOException {
+        log.info("Starting processProductFile test");
+
         byte[] fileBytes = new ClassPathResource("largeSizeProduct.csv").getInputStream().readAllBytes();
         String productsCsvContent = new String(fileBytes, StandardCharsets.UTF_8);
 
-        log.info("CSV File Size: {} bytes", fileBytes.length);
+        log.info("Test CSV content:\n{}", productsCsvContent);
 
-        long lineCount = productsCsvContent.lines().count();
-        log.info("CSV Line Count (including header): {}", lineCount);
+        List<Product> expectedProducts = Arrays.asList(
+                new Product("1", "Commodity Swaps 1"),
+                new Product("2", "Commodity Swaps"),
+                new Product("3", "FX Forward"),
+                new Product("4", "Government Bonds Domestic"),
+                new Product("5", "Convertible Bonds Domestic")
+        );
 
-        List<Product> savedProducts = webTestClient.post()
+        when(csvParser.parseProducts(any(Reader.class)))
+                .thenReturn(Flux.fromIterable(expectedProducts));
+
+        when(productService.loadProducts(any(Flux.class)))
+                .thenReturn(Mono.empty());
+
+        log.info("Sending POST request to /api/v1/products");
+        webTestClient.post()
                 .uri("/api/v1/products")
-                .contentType(MediaType.APPLICATION_JSON)
+                .contentType(MediaType.TEXT_PLAIN)
                 .bodyValue(productsCsvContent)
                 .exchange()
-                .expectStatus().isOk()
-                .returnResult(Product.class)
-                .getResponseBody()
-                .doOnNext(product -> log.info("Processed product: {}", product))
-                .collectList()
-                .block();
+                .expectStatus().isOk();
 
-    }
+        verify(csvParser).parseProducts(any(Reader.class));
+        verify(productService).loadProducts(any(Flux.class));
 
-
-    @Test
-    @DisplayName("Should successfully process valid CSV data with multiple trades")
-    void enrichTradeData_MultipleValidTrades_Success() {
-        List<Trade> trades = Arrays.asList(
-                Trade.builder()
-                        .date(LocalDate.parse("20230216", DateTimeFormatter.BASIC_ISO_DATE))
-                        .productId("1")
-                        .currency("USD")
-                        .price(new BigDecimal("100.50"))
-                        .build(),
-                Trade.builder()
-                        .date(LocalDate.parse("20230217", DateTimeFormatter.BASIC_ISO_DATE))
-                        .productId("2")
-                        .currency("EUR")
-                        .price(new BigDecimal("95.75"))
-                        .build()
-        );
-
-        List<Trade> enrichedTrades = Arrays.asList(
-                Trade.builder()
-                        .date(trades.get(0).getDate())
-                        .productId(trades.get(0).getProductId())
-                        .currency(trades.get(0).getCurrency())
-                        .price(trades.get(0).getPrice())
-                        .productName("Product 1")
-                        .build(),
-                Trade.builder()
-                        .date(trades.get(1).getDate())
-                        .productId(trades.get(1).getProductId())
-                        .currency(trades.get(1).getCurrency())
-                        .price(trades.get(1).getPrice())
-                        .productName("Product 2")
-                        .build()
-        );
-
+        log.info("Products processing test completed successfully");
     }
 
     @Test
     @DisplayName("Should handle empty CSV file")
     void enrichTradeData_EmptyFile_Success() {
+        log.info("Starting empty CSV file test");
+
         String csvContent = VALID_CSV_HEADER + "\n";
+        log.info("Testing with empty CSV content (header only): {}", csvContent);
 
         when(csvParser.parseTrades(any())).thenReturn(Flux.empty());
+        log.info("Configured csvParser to return empty Flux");
 
+        log.info("Sending POST request to /api/v1/enrich endpoint with empty CSV");
         webTestClient.post()
                 .uri("/api/v1/enrich")
                 .contentType(MediaType.TEXT_PLAIN)
@@ -255,17 +252,25 @@ public class TradeControllerTest {
                 .expectStatus().isOk()
                 .expectBodyList(Trade.class)
                 .hasSize(0);
-    }
 
+        log.info("Empty CSV file test completed successfully");
+        verify(csvParser).parseTrades(any());
+        log.info("Verified csvParser was called once");
+    }
 
     @Test
     @DisplayName("Should get product name by ID successfully")
     void getProductNameById_Success() {
         String productId = "1";
+        log.info("Starting getProductNameById test with productId: {}", productId);
+
         Product product = new Product(productId, "Test Product");
+        log.info("Created test product: ID={}, Name={}", product.getProductId(), product.getProductName());
 
         when(productService.getProductById(productId)).thenReturn(Mono.just(product));
+        log.info("Configured productService mock to return test product");
 
+        log.info("Sending GET request to /api/v1/product/{}", productId);
         webTestClient.get()
                 .uri("/api/v1/product/{productId}", productId)
                 .exchange()
@@ -274,38 +279,47 @@ public class TradeControllerTest {
                 .isEqualTo("Test Product");
 
         verify(productService).getProductById(productId);
+        log.info("Product retrieval test completed successfully");
     }
 
     @Test
     @DisplayName("Should handle non-existent product ID")
     void getProductNameById_NotFound() {
         String productId = "999";
+        log.info("Starting non-existent product test with productId: {}", productId);
 
         when(productService.getProductById(productId)).thenReturn(Mono.empty());
+        log.info("Configured productService to return empty Mono for non-existent product");
 
+        log.info("Sending GET request to /api/v1/product/{}", productId);
         webTestClient.get()
                 .uri("/api/v1/product/{productId}", productId)
                 .exchange()
                 .expectStatus().isOk()
                 .expectBody(String.class)
                 .isEqualTo("Product not found for ID: " + productId);
-    }
 
+        verify(productService).getProductById(productId);
+        log.info("Non-existent product test completed successfully");
+    }
 
     @Test
-    @DisplayName("Should handle empty product IDs list")
-    void getProductsByIds_EmptyList_Success() {
-        when(productService.getProductsByIds(any())).thenReturn(Flux.empty());
+    @DisplayName("Should handle empty CSV data")
+    void uploadProducts_EmptyData_Success() {
+        log.info("Starting empty CSV data test");
 
+        String emptyCsvData = "";
+
+        log.info("Sending POST request to /api/v1/products with empty CSV data");
         webTestClient.post()
                 .uri("/api/v1/products")
-                .contentType(MediaType.APPLICATION_JSON)
-                .bodyValue(Arrays.asList())
+                .contentType(MediaType.TEXT_PLAIN)
+                .bodyValue(emptyCsvData)
                 .exchange()
-                .expectStatus().isOk()
-                .expectBodyList(Product.class)
-                .hasSize(0);
+                .expectStatus().isOk();
+
+        // Verify that productService.loadProducts() was not called with empty data
+        verify(productService, never()).loadProducts(any());
+        log.info("Empty CSV data test completed successfully");
     }
-
-
 }

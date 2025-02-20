@@ -3,8 +3,6 @@ package org.example.testtask.domain.service;
 import lombok.extern.slf4j.Slf4j;
 import org.example.testtask.domain.model.Product;
 import org.example.testtask.domain.model.Trade;
-import org.example.testtask.infrastructure.parser.CsvParser;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -17,8 +15,6 @@ import java.util.concurrent.ConcurrentHashMap;
 @Service
 public class TradeService {
 
-    @Autowired
-    private CsvParser csvParser;
 
     private final Map<String, Product> productCache = new ConcurrentHashMap<>();
 

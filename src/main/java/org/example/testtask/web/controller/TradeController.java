@@ -61,8 +61,37 @@ public class TradeController {
     }
 
 
-    @PostMapping("/products")
-    public Flux<Product> getProductsByIds(@RequestBody Flux<String> productIds) {
-        return productService.getProductsByIds(productIds);
+    @PostMapping(value = "/products", consumes = MediaType.TEXT_PLAIN_VALUE)
+    public Mono<Void> uploadProducts(@RequestBody String csvData) {
+        log.info("Received products CSV data for processing");
+
+        if (csvData == null || csvData.trim().isEmpty()) {
+            log.error("Received empty CSV data");
+            return Mono.empty();
+        }
+
+        return Mono.just(csvData)
+                .flatMap(data -> Flux.using(
+                                () -> new StringReader(data),
+                                csvParser::parseProducts,
+                                reader -> {
+                                    try {
+                                        reader.close();
+                                    } catch (Exception e) {
+                                        log.error("Error closing reader", e);
+                                    }
+                                }
+                        )
+                        .collectList()
+                        .flatMap(products -> {
+                            log.info("Parsed {} products, loading to service", products.size());
+                            return productService.loadProducts(Flux.fromIterable(products));
+                        }))
+                .onErrorResume(e -> {
+                    log.error("Error processing products: {}", e.getMessage(), e);
+                    return Mono.empty();
+                })
+                .doOnSuccess(v -> log.info("Successfully completed products upload"))
+                .doOnError(e -> log.error("Failed to upload products: {}", e.getMessage()));
     }
 }
